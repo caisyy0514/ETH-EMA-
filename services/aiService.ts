@@ -20,7 +20,9 @@ const calcEMAArray = (prices: number[], period: number): number[] => {
     const k = 2 / (period + 1);
     let emaArray: number[] = [prices[0]];
     for (let i = 1; i < prices.length; i++) {
-        const val = prices[i] * k + emaArray[i-1] * (1 - k);
+        // Standard EMA formula: Price(t) * k + EMA(y) * (1-k)
+        // Initialize with first price (simple moving average approximation for first point or just price)
+        const val = i === 0 ? prices[0] : prices[i] * k + emaArray[i-1] * (1 - k);
         emaArray.push(val);
     }
     return emaArray;
@@ -48,7 +50,7 @@ const callDeepSeek = async (apiKey: string, messages: any[]) => {
                 model: "deepseek-chat",
                 messages: messages,
                 stream: false,
-                temperature: 0.5, // Lower temperature for stricter rule following
+                temperature: 0.1, // Very low temp for strict logic
                 max_tokens: 4096,
                 response_format: { type: 'json_object' }
             })
@@ -99,115 +101,121 @@ const fetchRealTimeNews = async (): Promise<string> => {
     }
 };
 
-// --- Strategy Logic Helper ---
+// --- Strategy Logic: ETH EMA Trend Tracking ---
 
 function analyze1HTrend(candles: CandleData[]) {
-    // Need at least enough candles for EMA60
-    if (candles.length < 60) return { direction: 'NEUTRAL', lastCrossIndex: -1, timestamp: 0 };
+    if (candles.length < 60) return { direction: 'NEUTRAL', timestamp: 0 };
     
     const closes = candles.map(c => parseFloat(c.c));
+    const opens = candles.map(c => parseFloat(c.o));
+    const timestamps = candles.map(c => parseInt(c.ts));
+    
     const ema15 = calcEMAArray(closes, 15);
     const ema60 = calcEMAArray(closes, 60);
     
-    // Check current state (last closed candle)
+    // Check current (latest completed) candle
     const i = closes.length - 1;
+    
+    // Logic 1: EMA Relationship
     const isGold = ema15[i] > ema60[i];
     const isDeath = ema15[i] < ema60[i];
     
-    // Check Candle Color (Close vs Open)
-    const isBullCandle = parseFloat(candles[i].c) > parseFloat(candles[i].o);
-    const isBearCandle = parseFloat(candles[i].c) < parseFloat(candles[i].o);
+    // Logic 2: Candle Color
+    const isYang = closes[i] > opens[i]; // Bullish
+    const isYin = closes[i] < opens[i];  // Bearish
     
-    // Find last cross
-    let lastCrossIdx = -1;
-    for (let x = i; x > 0; x--) {
-        const currDiff = ema15[x] - ema60[x];
-        const prevDiff = ema15[x-1] - ema60[x-1];
-        if ((currDiff >= 0 && prevDiff < 0) || (currDiff < 0 && prevDiff >= 0)) {
-            lastCrossIdx = x;
-            break;
-        }
+    // 1H Trend Judgment
+    if (isGold && isYang) {
+        return { direction: 'UP', timestamp: timestamps[i] };
+    }
+    if (isDeath && isYin) {
+        return { direction: 'DOWN', timestamp: timestamps[i] };
     }
     
-    // Strategy Rule: EMA15 > EMA60 + Yang Line = Upward Trend
-    if (isGold && isBullCandle) return { direction: 'UP', lastCrossIndex: lastCrossIdx, timestamp: parseInt(candles[lastCrossIdx]?.ts || '0') };
-    // Strategy Rule: EMA15 < EMA60 + Yin Line = Downward Trend
-    if (isDeath && isBearCandle) return { direction: 'DOWN', lastCrossIndex: lastCrossIdx, timestamp: parseInt(candles[lastCrossIdx]?.ts || '0') };
-    
-    // Fallback based on EMA only if candle color is noise, or stick to neutral
-    if (isGold) return { direction: 'UP_WEAK', lastCrossIndex: lastCrossIdx, timestamp: parseInt(candles[lastCrossIdx]?.ts || '0') };
-    if (isDeath) return { direction: 'DOWN_WEAK', lastCrossIndex: lastCrossIdx, timestamp: parseInt(candles[lastCrossIdx]?.ts || '0') };
-    
-    return { direction: 'NEUTRAL', lastCrossIndex: -1, timestamp: 0 };
+    // Fallback: Stick to EMA if candle color is ambiguous, but strategy says "EMA + Candle Color"
+    // If strict, we return Neutral. If loose, we follow EMA. 
+    // The prompt says "EMA15上穿EMA60 + K线收阳线 → 上涨趋势". Strict.
+    return { direction: 'NEUTRAL', timestamp: timestamps[i] };
 }
 
 function analyze3mEntry(candles: CandleData[], trendDirection: string) {
-    if (candles.length < 60) return { signal: false, sl: 0, reason: "Insufficient data" };
+    if (candles.length < 100) return { signal: false, action: 'HOLD', sl: 0, reason: "Insufficient 3m data" };
     
     const closes = candles.map(c => parseFloat(c.c));
     const highs = candles.map(c => parseFloat(c.h));
     const lows = candles.map(c => parseFloat(c.l));
-    
     const ema15 = calcEMAArray(closes, 15);
     const ema60 = calcEMAArray(closes, 60);
     
-    // Look for pattern in the recent window (e.g., last 20 candles)
-    // We need to find a completed sequence.
-    // Long: Death Cross Zone -> Golden Cross Trigger
-    // Short: Golden Cross Zone -> Death Cross Trigger
+    const i = closes.length - 1; // Latest completed candle
     
-    // Check if we JUST triggered (index -1 is the completed candle)
-    const i = closes.length - 1;
-    
-    if (trendDirection.includes('UP')) {
-        // Condition: Just crossed UP (Golden Cross)
+    // Long Logic: Trend UP -> Find Death Cross -> Then Gold Cross
+    if (trendDirection === 'UP') {
+        // 1. Check if we JUST crossed up (Gold Cross trigger)
+        // Condition: EMA15[i] > EMA60[i] AND EMA15[i-1] <= EMA60[i-1]
         const justCrossedUp = ema15[i] > ema60[i] && ema15[i-1] <= ema60[i-1];
         
         if (justCrossedUp) {
-            // Validate: Was there a Death Cross zone before?
-            // Go back to find where EMA15 was < EMA60
-            let minLow = lows[i]; // Start SL tracking
+            // 2. Validate "Preceding Death Cross Sequence"
+            // Look backwards from i-1. We need to find a period where EMA15 < EMA60
             let foundDeathZone = false;
+            let lowestInDeathZone = lows[i]; // Start tracking SL
             
-            for (let x = i - 1; x > 0; x--) {
+            for (let x = i - 1; x >= 0; x--) {
                 if (ema15[x] < ema60[x]) {
                     foundDeathZone = true;
-                    if (lows[x] < minLow) minLow = lows[x];
+                    if (lows[x] < lowestInDeathZone) lowestInDeathZone = lows[x];
                 } else {
-                    // EMA15 > EMA60 again (Previous Golden Zone), stop search
-                    if (foundDeathZone) break; 
+                    // EMA15 > EMA60 (Previous Gold Zone). Stop if we already found our death zone.
+                    if (foundDeathZone) break;
+                    // If we haven't found a death zone yet and hit a gold zone immediately, 
+                    // it means the cross at [i] might be noise or invalid? 
+                    // Actually if [i-1] was <=, then [i-1] is the start/end of death zone.
                 }
             }
             
             if (foundDeathZone) {
-                return { signal: true, sl: minLow, reason: "Long Entry Pattern: Death -> Golden Cross detected" };
+                return { 
+                    signal: true, 
+                    action: 'BUY', 
+                    sl: lowestInDeathZone, 
+                    reason: "1H Uptrend + 3m Death-to-Gold Cross Pattern" 
+                };
             }
         }
-    } else if (trendDirection.includes('DOWN')) {
-        // Condition: Just crossed DOWN (Death Cross)
+    }
+    
+    // Short Logic: Trend DOWN -> Find Gold Cross -> Then Death Cross
+    if (trendDirection === 'DOWN') {
+        // 1. Check if we JUST crossed down (Death Cross trigger)
         const justCrossedDown = ema15[i] < ema60[i] && ema15[i-1] >= ema60[i-1];
         
         if (justCrossedDown) {
-            // Validate: Was there a Golden Cross zone before?
-            let maxHigh = highs[i];
+            // 2. Validate "Preceding Gold Cross Sequence"
             let foundGoldZone = false;
+            let highestInGoldZone = highs[i];
             
-            for (let x = i - 1; x > 0; x--) {
+            for (let x = i - 1; x >= 0; x--) {
                 if (ema15[x] > ema60[x]) {
                     foundGoldZone = true;
-                    if (highs[x] > maxHigh) maxHigh = highs[x];
+                    if (highs[x] > highestInGoldZone) highestInGoldZone = highs[x];
                 } else {
                     if (foundGoldZone) break;
                 }
             }
             
             if (foundGoldZone) {
-                return { signal: true, sl: maxHigh, reason: "Short Entry Pattern: Golden -> Death Cross detected" };
+                return { 
+                    signal: true, 
+                    action: 'SELL', 
+                    sl: highestInGoldZone, 
+                    reason: "1H Downtrend + 3m Gold-to-Death Cross Pattern" 
+                };
             }
         }
     }
     
-    return { signal: false, sl: 0, reason: "No valid entry pattern" };
+    return { signal: false, action: 'HOLD', sl: 0, reason: "No new cross pattern" };
 }
 
 // --- Main Decision Function ---
@@ -222,9 +230,8 @@ export const getTradingDecision = async (
   // --- 1. Data Prep ---
   const currentPrice = parseFloat(marketData.ticker?.last || "0");
   const totalEquity = parseFloat(accountData.balance.totalEq);
-  const availableEquity = parseFloat(accountData.balance.availEq);
   
-  // EMA Strategy Analysis
+  // Strategy Analysis
   const trend1H = analyze1HTrend(marketData.candles1H);
   const entry3m = analyze3mEntry(marketData.candles3m, trend1H.direction);
   
@@ -233,186 +240,180 @@ export const getTradingDecision = async (
   const hasPosition = !!primaryPosition && parseFloat(primaryPosition.pos) > 0;
   
   let posAnalysis = "无持仓";
-  let pyramidingSignal = false;
-  let riskManagementSignal = "HOLD"; // Default
-  let suggestedSL = "";
+  let finalAction = "HOLD";
+  let finalSize = "0";
+  let finalSL = "";
+  let invalidationReason = "";
+  
+  // --- Decision Logic ---
   
   if (hasPosition) {
       const p = primaryPosition!;
-      const entryPrice = parseFloat(p.avgPx);
+      const posSize = parseFloat(p.pos);
       const upl = parseFloat(p.upl);
-      const sizeVal = parseFloat(p.pos) * CONTRACT_VAL_ETH * currentPrice;
-      const initialMargin = sizeVal / parseFloat(p.leverage || "50"); // Estimate
+      const isLong = p.posSide === 'long';
       
-      // Net Profit Calc
-      const fees = sizeVal * TAKER_FEE_RATE * 2; // Open + Close estimate
-      const netPnL = upl - fees;
-      const netPnLPct = (netPnL / initialMargin) * 100; // Return on Margin
-      
-      posAnalysis = `
-      方向: ${p.posSide}
-      持仓: ${p.pos} 张
-      均价: ${entryPrice}
-      浮盈: ${upl} U (Net: ${netPnL.toFixed(2)} U)
-      ROI: ${netPnLPct.toFixed(2)}%
-      `;
+      posAnalysis = `${p.posSide.toUpperCase()} ${p.pos} 张, 浮盈: ${upl} U`;
 
-      // 1. Pyramiding Logic: Add 5% for every 5% profit
-      // Simple check: Is PnL > 5%? (And maybe check if we recently added? AI can handle frequency via 'confidence')
-      if (netPnLPct >= 5) {
-          pyramidingSignal = true;
-      }
-
-      // 2. Trailing SL Logic
-      // Recent 5 candles on 3m
-      const recent3m = marketData.candles3m.slice(-5);
-      const recentHigh = Math.max(...recent3m.map(c => parseFloat(c.h)));
-      const recentLow = Math.min(...recent3m.map(c => parseFloat(c.l)));
+      // 1. Check Trend Reversal (Immediate Close)
+      if (trend1H.direction === 'UP' && !isLong) finalAction = "CLOSE";
+      else if (trend1H.direction === 'DOWN' && isLong) finalAction = "CLOSE";
       
-      // Check Breakeven trigger: Floating Profit > Initial Risk
-      // We assume initial risk was ~1-2% of price or based on the setup SL. 
-      // Simplified: If Net PnL > 0.5% of total equity (covers fees + risk), move to BE.
-      
-      if (p.posSide === 'long') {
-          if (netPnL > 10) { // Hardcoded 10U buffer or just profit > 0
-               suggestedSL = p.breakEvenPx || entryPrice.toFixed(2);
-               // Trailing
-               const trailPx = (recentLow * 0.9995).toFixed(2); // Slightly below low
-               if (parseFloat(trailPx) > parseFloat(suggestedSL)) suggestedSL = trailPx;
-               riskManagementSignal = "UPDATE_TPSL";
-          }
-      } else {
-          if (netPnL > 10) {
-              suggestedSL = p.breakEvenPx || entryPrice.toFixed(2);
-               // Trailing
-               const trailPx = (recentHigh * 1.0005).toFixed(2); // Slightly above high
-               if (parseFloat(trailPx) < parseFloat(suggestedSL)) suggestedSL = trailPx;
-               riskManagementSignal = "UPDATE_TPSL";
+      // 2. Rolling (Pyramiding)
+      // Rule: Profit 5% -> Add 5%. Interpreted as PnL >= 5% of Account Equity
+      if (finalAction === "HOLD") {
+          const profitThreshold = totalEquity * 0.05;
+          if (upl >= profitThreshold) {
+              finalAction = isLong ? "BUY" : "SELL";
+              finalSize = "5%"; // Will be calc'd later
+              invalidationReason = "Rolling: Profit > 5%";
           }
       }
       
-      // 3. Trend Reversal Check (Immediate Close)
-      if (trend1H.direction === 'UP' && p.posSide === 'short') riskManagementSignal = "CLOSE";
-      if (trend1H.direction === 'DOWN' && p.posSide === 'long') riskManagementSignal = "CLOSE";
+      // 3. Trailing SL Logic
+      // Rule: Move to BE if profitable. Then trail 3-5 candles.
+      if (finalAction === "HOLD" || finalAction.includes("BUY") || finalAction.includes("SELL")) {
+          // Calculate Trailing SL
+          const recent3m = marketData.candles3m.slice(-5);
+          let newSL = parseFloat(p.slTriggerPx || "0");
+          let shouldUpdate = false;
+          
+          // Basic Breakeven trigger: Upl > 50% of Risk (simplified buffer) or just > 0 covers fees
+          const entryPx = parseFloat(p.avgPx);
+          
+          if (isLong) {
+              // Dynamic Trail: Lowest of last 5 candles
+              const lowestRecent = Math.min(...recent3m.map(c => parseFloat(c.l)));
+              const potentialSL = lowestRecent * 0.9995; // Small buffer
+              
+              // Only move SL UP
+              if (potentialSL > newSL && potentialSL < currentPrice) {
+                  newSL = potentialSL;
+                  shouldUpdate = true;
+              }
+              // Ensure at least Breakeven if profit is decent
+              if (upl > 5 && newSL < entryPx) {
+                  newSL = entryPx * 1.001; // Slightly above entry
+                  shouldUpdate = true;
+              }
+          } else {
+              // Dynamic Trail: Highest of last 5 candles
+              const highestRecent = Math.max(...recent3m.map(c => parseFloat(c.h)));
+              const potentialSL = highestRecent * 1.0005;
+              
+              // Only move SL DOWN
+              if ((newSL === 0 || potentialSL < newSL) && potentialSL > currentPrice) {
+                  newSL = potentialSL;
+                  shouldUpdate = true;
+              }
+              if (upl > 5 && (newSL === 0 || newSL > entryPx)) {
+                  newSL = entryPx * 0.999;
+                  shouldUpdate = true;
+              }
+          }
+          
+          if (shouldUpdate && finalAction === "HOLD") {
+              finalAction = "UPDATE_TPSL";
+              finalSL = newSL.toFixed(2);
+          }
+          if (shouldUpdate && (finalAction === "BUY" || finalAction === "SELL")) {
+              // If adding position, we also update SL for the whole stack
+              finalSL = newSL.toFixed(2);
+          }
+      }
+
+  } else {
+      // No Position: Check Entry
+      if (entry3m.signal) {
+          finalAction = entry3m.action;
+          finalSize = "5%"; // Initial Size
+          finalSL = entry3m.sl.toFixed(2);
+      }
   }
 
   // --- News ---
   const newsContext = await fetchRealTimeNews();
 
-  // --- Prompt Construction ---
+  // --- Prompt Construction (Verification) ---
   const systemPrompt = `
 你是一个严格执行 **ETH EMA 趋势追踪策略** 的交易机器人。
-**严禁** 使用任何其他指标（RSI, MACD, KDJ 等），只关注 EMA15 和 EMA60。
+当前时间: ${new Date().toLocaleString()}
 
-**当前市场状态**:
-- 1H 趋势 (趋势判断): ${trend1H.direction} (自 ${new Date(trend1H.timestamp).toLocaleTimeString()})
-- 3m 信号 (入场时机): ${entry3m.signal ? "TRIGGERED" : "WAITING"}
-- 3m 信号详情: ${entry3m.reason}
-- 计算止损位 (SL): ${entry3m.sl}
+**策略状态**:
+1. **1H 趋势**: ${trend1H.direction}
+2. **3m 入场信号**: ${entry3m.signal ? entry3m.action + " triggered" : "None"} (Reason: ${entry3m.reason})
+3. **计算建议**: Action=${finalAction}, SL=${finalSL || "Keep"}
 
-**持仓状态**:
-${posAnalysis}
+**执行规则**:
+- 只有当 1H 趋势明确且 3m 出现特定交叉形态(死后金/金后死)才开仓。
+- 首仓 5% 权益。
+- 盈利 > 5% 权益时滚仓加码 5%。
+- 趋势反转立即平仓。
 
-**策略规则 (Strategy Rules)**:
-1. **趋势判断 (1H)**: 
-   - EMA15 > EMA60 且 K线阳线 -> 看涨。
-   - EMA15 < EMA60 且 K线阴线 -> 看跌。
-2. **入场逻辑 (3m)**: 
-   - 必须在 1H 趋势方向上操作。
-   - 看涨时: 等待 3m 图出现 [死叉 EMA15<60] -> [金叉 EMA15>60]。在金叉形成的 K 线收盘买入。
-   - 看跌时: 等待 3m 图出现 [金叉 EMA15>60] -> [死叉 EMA15<60]。在死叉形成的 K 线收盘卖出。
-3. **资金管理 (Rolling)**:
-   - 首仓 5% 资金。
-   - 每盈利 5% 加仓 5%。
-4. **止损管理**:
-   - 初始止损: 入场前一波反向交叉的极值 (Long用死叉期最低价, Short用金叉期最高价)。
-   - 移动止损: 盈利后移至保本；随后跟随 3m K线高低点移动。
-5. **反转离场**:
-   - 如果 1H 趋势反转 (与持仓方向相反)，立即平仓。
-
-**指令生成**:
-- 如果当前无持仓 且 3m信号触发 -> BUY/SELL (Size: 5% Equity).
-- 如果有持仓 且 趋势反转 -> CLOSE.
-- 如果有持仓 且 盈利达标(ROI > 5%) -> BUY/SELL (Add Position 5%).
-- 如果有持仓 且 需要移动止损 -> UPDATE_TPSL (Set new SL).
-- 否则 -> HOLD.
+请基于上述计算结果生成 JSON 决策。
 `;
-
-  const responseSchema = `
-  {
-    "stage_analysis": "EMA策略执行",
-    "market_assessment": "简述1H趋势和3m信号状态...",
-    "hot_events_overview": "...",
-    "eth_analysis": "...", 
-    "trading_decision": {
-      "action": "BUY|SELL|HOLD|CLOSE|UPDATE_TPSL",
-      "confidence": "0-100%",
-      "position_size": "数量(张) or '5%'",
-      "leverage": "50",
-      "profit_target": "",
-      "stop_loss": "${entry3m.signal ? entry3m.sl : suggestedSL}",
-      "invalidation_condition": "1H趋势反转"
-    },
-    "reasoning": "严格基于EMA规则解释"
-  }
-  `;
 
   try {
     const text = await callDeepSeek(apiKey, [
-        { role: "system", content: systemPrompt + "\nJSON ONLY:\n" + responseSchema },
-        { role: "user", content: `账户权益: ${totalEquity}, 可用: ${availableEquity}. News: ${newsContext}` }
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Account: ${totalEquity} USDT. News: ${newsContext}` }
     ]);
 
-    if (!text) throw new Error("AI 返回为空");
+    // We mostly trust our calculated 'finalAction' but let AI explain/confirm format
+    // To ensure strictness, we overwrite the AI's action with our calculated logic if they differ,
+    // or just use AI for 'reasoning' and formatting.
+    // For this implementation, we will inject our strict logic into the response object.
+    
+    let decision: AIDecision = {
+        stage_analysis: "EMA趋势追踪",
+        market_assessment: `1H趋势: ${trend1H.direction}, 3m信号: ${entry3m.reason}`,
+        hot_events_overview: "News processed",
+        eth_analysis: `EMA15/60 State. Trend: ${trend1H.direction}`,
+        trading_decision: {
+            action: finalAction as any,
+            confidence: "100%", // Logic driven
+            position_size: finalSize,
+            leverage: "50",
+            profit_target: "",
+            stop_loss: finalSL,
+            invalidation_condition: "Trend Reversal"
+        },
+        reasoning: `Based on strict EMA15/60 logic. 1H is ${trend1H.direction}. 3m Signal is ${entry3m.signal}.`,
+        action: finalAction as any,
+        size: "0",
+        leverage: "50"
+    };
 
-    let decision: AIDecision;
+    // Parse AI reasoning if valid JSON
     try {
         const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        decision = JSON.parse(cleanText);
+        const aiJson = JSON.parse(cleanText);
+        decision.reasoning = aiJson.reasoning || decision.reasoning;
+        decision.hot_events_overview = aiJson.hot_events_overview || "N/A";
     } catch (e) {
-        throw new Error("AI 返回格式错误");
+        // Ignore JSON parse error, use defaults
     }
 
-    // --- Post-Processing ---
-    decision.action = decision.trading_decision.action.toUpperCase() as any;
-    
-    // Auto-calculate size if "5%" is requested
-    if (decision.action === 'BUY' || decision.action === 'SELL') {
-        if (decision.trading_decision.position_size.includes('%') || !decision.trading_decision.position_size || decision.trading_decision.position_size === "0") {
-             // 5% of Total Equity
-             const amountU = totalEquity * 0.05;
-             const leverage = parseFloat(decision.trading_decision.leverage) || 50;
-             const positionValue = amountU * leverage;
-             const contracts = positionValue / (CONTRACT_VAL_ETH * currentPrice);
-             decision.size = Math.max(contracts, 0.01).toFixed(2);
-        } else {
-             decision.size = decision.trading_decision.position_size;
-        }
-        decision.leverage = (decision.trading_decision.leverage || "50").toString();
-    } else {
-        decision.size = "0";
-        decision.leverage = "0";
+    // Calc precise size for "5%"
+    if (finalAction === 'BUY' || finalAction === 'SELL') {
+        const amountU = totalEquity * 0.05;
+        const leverage = 50;
+        const positionValue = amountU * leverage;
+        const contracts = positionValue / (CONTRACT_VAL_ETH * currentPrice);
+        decision.size = Math.max(contracts, 0.01).toFixed(2);
     }
 
     return decision;
 
   } catch (error: any) {
-    console.error("AI Decision Error:", error);
+    console.error("Strategy Error:", error);
     return {
-        stage_analysis: "AI Error",
-        market_assessment: "Unknown",
-        hot_events_overview: "N/A",
-        eth_analysis: "N/A",
-        trading_decision: {
-            action: 'hold',
-            confidence: "0%",
-            position_size: "0",
-            leverage: "0",
-            profit_target: "0",
-            stop_loss: "0",
-            invalidation_condition: "Error"
-        },
-        reasoning: "System Error: " + error.message,
+        stage_analysis: "Error",
+        market_assessment: "Error",
+        hot_events_overview: "Error",
+        eth_analysis: "Error",
+        trading_decision: { action: 'hold', confidence: "0%", position_size: "0", leverage: "0", profit_target: "", stop_loss: "", invalidation_condition: "" },
+        reasoning: error.message,
         action: 'HOLD',
         size: "0",
         leverage: "0"

@@ -50,8 +50,8 @@ export const fetchMarketData = async (config: any): Promise<MarketDataCollection
     const candles1HRes = await fetch(`${BASE_URL}/api/v5/market/candles?instId=${INSTRUMENT_ID}&bar=1H&limit=100`);
     const candles1HJson = await candles1HRes.json();
 
-    // NEW: 3m for Entry/Exit
-    const candles3mRes = await fetch(`${BASE_URL}/api/v5/market/candles?instId=${INSTRUMENT_ID}&bar=3m&limit=200`);
+    // NEW: 3m for Entry/Exit - Increased limit to 300 to capture pre-cross intervals
+    const candles3mRes = await fetch(`${BASE_URL}/api/v5/market/candles?instId=${INSTRUMENT_ID}&bar=3m&limit=300`);
     const candles3mJson = await candles3mRes.json();
 
     const fundingRes = await fetch(`${BASE_URL}/api/v5/public/funding-rate?instId=${INSTRUMENT_ID}`);
@@ -250,7 +250,6 @@ export const executeOrder = async (order: AIDecision, config: any): Promise<any>
         if (jsonShort.code === '0') return jsonShort; // 成功
 
         // 3. 如果都失败，抛出详细错误 (Both failed)
-        // 优先显示非“仓位不存在”的错误，或者合并显示
         const longMsg = jsonLong.code === '51000' || jsonLong.msg.includes('不存在') ? '多单不存在' : jsonLong.msg;
         const shortMsg = jsonShort.code === '51000' || jsonShort.msg.includes('不存在') ? '空单不存在' : jsonShort.msg;
         
@@ -264,7 +263,6 @@ export const executeOrder = async (order: AIDecision, config: any): Promise<any>
     const side = order.action === 'BUY' ? 'buy' : 'sell';
 
     // 2. Set Leverage First (Crucial for V5)
-    // V5 trade/order does NOT accept 'lever' param. It uses account setting.
     try {
         await setLeverage(INSTRUMENT_ID, order.leverage || "50", posSide, config);
     } catch (e: any) {
@@ -322,7 +320,6 @@ export const executeOrder = async (order: AIDecision, config: any): Promise<any>
 
     if (json.code !== '0') {
         let errorMsg = `Code ${json.code}: ${json.msg}`;
-        // Append data detail for debugging
         if (json.data) errorMsg += ` (Data: ${JSON.stringify(json.data)})`;
 
         if (json.code === '51008') {
@@ -393,8 +390,6 @@ export const updatePositionTPSL = async (instId: string, posSide: 'long' | 'shor
                 if (tpJson.code !== '0') throw new Error(`设置新止盈失败: ${tpJson.msg}`);
             }
         } else {
-             // If no new prices provided, we might be clearing them.
-             // If toCancel has items, we proceed to cancel below.
              if (toCancel.length === 0) return { code: "0", msg: "无新的止盈止损价格" };
         }
 
@@ -471,8 +466,8 @@ function generateMockMarketData(): MarketDataCollection {
     ticker: { ...MOCK_TICKER, last: currentPrice.toFixed(2), ts: now.toString() },
     candles5m: generateCandles(50, 300000),
     candles15m: generateCandles(50, 900000),
-    candles1H: generateCandles(100, 3600000), // 1 Hour
-    candles3m: generateCandles(200, 180000), // 3 Minute
+    candles1H: generateCandles(100, 3600000), 
+    candles3m: generateCandles(300, 180000), 
     fundingRate: "0.0001",
     openInterest: "50000",
     orderbook: [],
