@@ -33,7 +33,8 @@ const DecisionReport: React.FC<Props> = ({ decision }) => {
                     <h4 className="flex items-center gap-2 text-blue-400 font-bold uppercase tracking-wider text-xs">
                     <TrendingUp size={14}/> 03. 市场整体评估
                     </h4>
-                    <div className="p-4 bg-gray-900/50 border border-blue-500/20 rounded-lg h-full">
+                    {/* Added whitespace-pre-wrap to respect newlines in market_assessment */}
+                    <div className="p-4 bg-gray-900/50 border border-blue-500/20 rounded-lg h-full whitespace-pre-wrap">
                     {decision.market_assessment}
                     </div>
             </div>
