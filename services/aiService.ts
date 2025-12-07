@@ -141,7 +141,7 @@ function analyze1HTrend(candles: CandleData[]) {
 }
 
 function analyze3mEntry(candles: CandleData[], trendDirection: string) {
-    if (candles.length < 100) return { signal: false, action: 'HOLD', sl: 0, reason: "Insufficient 3m data" };
+    if (candles.length < 100) return { signal: false, action: 'HOLD', sl: 0, reason: "数据不足" };
     
     const closes = candles.map(c => parseFloat(c.c));
     const highs = candles.map(c => parseFloat(c.h));
@@ -181,7 +181,7 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
                     signal: true, 
                     action: 'BUY', 
                     sl: lowestInDeathZone, 
-                    reason: "1H Uptrend + 3m Death-to-Gold Cross Pattern" 
+                    reason: "1H上涨 + 3m死叉后金叉" 
                 };
             }
         }
@@ -211,13 +211,18 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
                     signal: true, 
                     action: 'SELL', 
                     sl: highestInGoldZone, 
-                    reason: "1H Downtrend + 3m Gold-to-Death Cross Pattern" 
+                    reason: "1H下跌 + 3m金叉后死叉" 
                 };
             }
         }
     }
     
-    return { signal: false, action: 'HOLD', sl: 0, reason: "No new cross pattern" };
+    // Detailed No-Signal Reasons
+    if (trendDirection === 'NEUTRAL') return { signal: false, action: 'HOLD', sl: 0, reason: "1H趋势不明确" };
+    if (trendDirection === 'UP') return { signal: false, action: 'HOLD', sl: 0, reason: "1H上涨中，等待3m回调信号" };
+    if (trendDirection === 'DOWN') return { signal: false, action: 'HOLD', sl: 0, reason: "1H下跌中，等待3m反弹信号" };
+
+    return { signal: false, action: 'HOLD', sl: 0, reason: "未满足入场条件" };
 }
 
 // --- Main Decision Function ---
@@ -390,11 +395,13 @@ ${posAnalysis}
 - 趋势反转立即平仓。
 - 如果有持仓 且 需要移动止损 -> UPDATE_TPSL (Set new SL).
 - 默认杠杆固定为 ${DEFAULT_LEVERAGE}x。
-
 **输出要求**:
 1. 返回格式必须为 JSON。
 2. **重要**: 所有文本分析字段（stage_analysis, market_assessment, hot_events_overview, eth_analysis, reasoning, invalidation_condition）必须使用 **中文 (Simplified Chinese)** 输出。
 3. **hot_events_overview** 字段：请仔细阅读提供的 News 英文数据，将其翻译并提炼为简练的中文市场热点摘要。
+4. **market_assessment** 字段：必须明确包含以下两行结论：
+   - 【1H趋势】：明确指出当前1小时级别是上涨、下跌还是震荡。
+   - 【3m入场】：明确指出当前3分钟级别是否满足策略定义的入场条件。
 
 请基于上述计算结果生成 JSON 决策。
 `;
@@ -405,16 +412,16 @@ ${posAnalysis}
         { role: "user", content: `Account: ${totalEquity} USDT. News Data: ${newsContext}` }
     ]);
 
+    // Construct Fallback strings for market assessment
+    const tDirection = trend1H.direction === 'UP' ? '上涨 (EMA金叉+阳线)' : trend1H.direction === 'DOWN' ? '下跌 (EMA死叉+阴线)' : '震荡/中性';
+    const tEntry = entry3m.signal ? `满足入场条件 (${entry3m.reason})` : `不满足入场条件 (${entry3m.reason})`;
+
     // We mostly trust our calculated 'finalAction' but let AI explain/confirm format
-    // To ensure strictness, we overwrite the AI's action with our calculated logic if they differ,
-    // or just use AI for 'reasoning' and formatting.
-    // For this implementation, we will inject our strict logic into the response object.
-    
     let decision: AIDecision = {
         stage_analysis: "EMA趋势追踪",
-        market_assessment: `1H趋势: ${trend1H.direction}, 3m信号: ${entry3m.reason}`,
+        market_assessment: `【1H趋势】：${tDirection}\n【3m入场】：${tEntry}`,
         hot_events_overview: "正在分析热点...",
-        eth_analysis: `EMA15/60 State. Trend: ${trend1H.direction}`,
+        eth_analysis: `EMA15/60 状态分析。趋势: ${tDirection}`,
         trading_decision: {
             action: finalAction as any,
             confidence: "100%", // Logic driven
@@ -424,7 +431,7 @@ ${posAnalysis}
             stop_loss: finalSL,
             invalidation_condition: "Trend Reversal"
         },
-        reasoning: `Based on strict EMA15/60 logic. 1H is ${trend1H.direction}. 3m Signal is ${entry3m.signal}.`,
+        reasoning: `基于EMA15/60严格策略逻辑。1H趋势为${tDirection}。3m信号状态：${tEntry}。`,
         action: finalAction as any,
         size: "0",
         leverage: DEFAULT_LEVERAGE // Force 5x
