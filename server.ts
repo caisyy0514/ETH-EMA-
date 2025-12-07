@@ -57,14 +57,27 @@ const runTradingLoop = async () => {
 
     // 2. AI Analysis Logic
     const now = Date.now();
-    // Analyze every 15 seconds (High Frequency for Ultra-Short Term)
-    if (now - lastAnalysisTime < 15000) return;
+
+    // Determine interval based on position status
+    // Default to 3 minutes (180000ms) for empty position
+    // If holding position, switch to 1 minute (60000ms)
+    let intervalMs = 180000; 
+
+    if (accountData) {
+        const primaryPosition = accountData.positions.find(p => p.instId === INSTRUMENT_ID);
+        // Check if position exists and size > 0 (absolute value check implies holding)
+        if (primaryPosition && parseFloat(primaryPosition.pos) > 0) {
+            intervalMs = 60000;
+        }
+    }
+
+    if (now - lastAnalysisTime < intervalMs) return;
 
     // Use setTimeout instead of setImmediate to avoid TS errors
     setTimeout(async () => {
         try {
             lastAnalysisTime = now;
-            addLog('INFO', '正在调用云端战神引擎 (超短线模式)...');
+            addLog('INFO', `正在调用云端战神引擎... (当前频率: ${intervalMs/1000}秒/次)`);
             
             if (!marketData || !accountData) return;
 
@@ -82,7 +95,7 @@ const runTradingLoop = async () => {
             addLog('INFO', `[${decision.stage_analysis.substring(0, 10)}..] 决策: ${decision.action} (置信度 ${conf})`);
 
             // Find main position for management
-            const primaryPosition = accountData.positions.find(p => p.instId === INSTRUMENT_ID);
+            const primaryPosition = accountData?.positions.find(p => p.instId === INSTRUMENT_ID);
 
             // Execute Actions
             if (decision.action === 'UPDATE_TPSL') {
