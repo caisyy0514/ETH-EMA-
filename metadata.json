@@ -1,0 +1,5 @@
+{
+  "name": "ETH EMA趋势追踪",
+  "description": "EMA趋势量化交易",
+  "requestFramePermissions": []
+}
