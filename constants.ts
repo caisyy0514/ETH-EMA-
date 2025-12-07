@@ -7,6 +7,9 @@ export const CONTRACT_VAL_ETH = 0.1;
 // 费率设定 (保守估计 Taker 0.05%)
 export const TAKER_FEE_RATE = 0.0005; 
 
+// 全局默认杠杆
+export const DEFAULT_LEVERAGE = "5";
+
 export const DEFAULT_CONFIG = {
   okxApiKey: "",
   okxSecretKey: "",
@@ -21,7 +24,7 @@ export const STRATEGY_STAGES = {
     name: "EMA 滚仓追踪",
     initial_risk: 0.05, // 5% Initial Position
     add_step: 0.05,     // Add 5% per 5% profit (Equity Gain)
-    leverage: 5,       // Default Leverage
+    leverage: 5,        // Default Leverage (Consistent with global)
   }
 };
 
