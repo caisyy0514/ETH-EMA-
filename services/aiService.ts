@@ -400,8 +400,8 @@ ${posAnalysis}
 2. **重要**: 所有文本分析字段（stage_analysis, market_assessment, hot_events_overview, eth_analysis, reasoning, invalidation_condition）必须使用 **中文 (Simplified Chinese)** 输出。
 3. **hot_events_overview** 字段：请仔细阅读提供的 News 英文数据，将其翻译并提炼为简练的中文市场热点摘要。
 4. **market_assessment** 字段：必须明确包含以下两行结论：
-   - 【1H趋势】：明确指出当前1小时级别是上涨、下跌还是震荡。
-   - 【3m入场】：明确指出当前3分钟级别是否满足策略定义的入场条件。
+   - 【1H趋势】：明确指出当前1小时级别EMA15和EMA60的关系（金叉、死叉）是上涨、下跌还是震荡。
+   - 【3m入场】：明确指出当前3分钟级别是否满足策略定义的入场条件，并说明原因。
 
 请基于上述计算结果生成 JSON 决策。
 `;
