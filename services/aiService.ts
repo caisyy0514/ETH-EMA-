@@ -81,15 +81,17 @@ export const testConnection = async (apiKey: string): Promise<string> => {
 };
 
 // --- News Fetcher (Internet Search Capability) ---
+// 使用 CryptoCompare 公共 API 获取实时热点
 const fetchRealTimeNews = async (): Promise<string> => {
     try {
-        const url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=3";
+        // Limit increased to 5 for better context
+        const url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=5";
         const res = await fetch(url);
         if (!res.ok) return "暂无法连接互联网新闻源";
         
         const json = await res.json();
         if (json.Data && Array.isArray(json.Data)) {
-            const items = json.Data.slice(0, 3).map((item: any) => {
+            const items = json.Data.slice(0, 5).map((item: any) => {
                 const time = new Date(item.published_on * 1000).toLocaleTimeString();
                 return `- [${time}] ${item.title}`;
             });
@@ -353,6 +355,7 @@ export const getTradingDecision = async (
   const systemPrompt = `
 你是一个严格执行 **ETH EMA 趋势追踪策略** 的交易机器人。
 **严禁** 使用任何其他指标（RSI, MACD, KDJ 等），只关注 EMA15 和 EMA60。
+当前时间: ${new Date().toLocaleString()}
 
 **当前市场状态**:
 - 1H 趋势 (趋势判断): ${trend1H.direction} (自 ${new Date(trend1H.timestamp).toLocaleTimeString()})
@@ -379,7 +382,7 @@ ${posAnalysis}
    - 移动止损: 盈利后移至保本；随后跟随 3m K线高低点移动。
 5. **反转离场**:
    - 如果 1H 趋势反转 (与持仓方向相反)，立即平仓。
-   
+
 **执行规则**:
 - 只有当 1H 趋势明确且 3m 出现特定交叉形态(死后金/金后死)才开仓。
 - 首仓 5% 权益。
@@ -388,13 +391,18 @@ ${posAnalysis}
 - 如果有持仓 且 需要移动止损 -> UPDATE_TPSL (Set new SL).
 - 默认杠杆固定为 ${DEFAULT_LEVERAGE}x。
 
+**输出要求**:
+1. 返回格式必须为 JSON。
+2. **重要**: 所有文本分析字段（stage_analysis, market_assessment, hot_events_overview, eth_analysis, reasoning, invalidation_condition）必须使用 **中文 (Simplified Chinese)** 输出。
+3. **hot_events_overview** 字段：请仔细阅读提供的 News 英文数据，将其翻译并提炼为简练的中文市场热点摘要。
+
 请基于上述计算结果生成 JSON 决策。
 `;
 
   try {
     const text = await callDeepSeek(apiKey, [
         { role: "system", content: systemPrompt },
-        { role: "user", content: `Account: ${totalEquity} USDT. News: ${newsContext}` }
+        { role: "user", content: `Account: ${totalEquity} USDT. News Data: ${newsContext}` }
     ]);
 
     // We mostly trust our calculated 'finalAction' but let AI explain/confirm format
@@ -405,7 +413,7 @@ ${posAnalysis}
     let decision: AIDecision = {
         stage_analysis: "EMA趋势追踪",
         market_assessment: `1H趋势: ${trend1H.direction}, 3m信号: ${entry3m.reason}`,
-        hot_events_overview: "News processed",
+        hot_events_overview: "正在分析热点...",
         eth_analysis: `EMA15/60 State. Trend: ${trend1H.direction}`,
         trading_decision: {
             action: finalAction as any,
@@ -426,10 +434,20 @@ ${posAnalysis}
     try {
         const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
         const aiJson = JSON.parse(cleanText);
-        decision.reasoning = aiJson.reasoning || decision.reasoning;
-        decision.hot_events_overview = aiJson.hot_events_overview || "N/A";
+        
+        // Map AI fields if they exist
+        if(aiJson.stage_analysis) decision.stage_analysis = aiJson.stage_analysis;
+        if(aiJson.market_assessment) decision.market_assessment = aiJson.market_assessment;
+        if(aiJson.hot_events_overview) decision.hot_events_overview = aiJson.hot_events_overview;
+        if(aiJson.eth_analysis) decision.eth_analysis = aiJson.eth_analysis;
+        if(aiJson.reasoning) decision.reasoning = aiJson.reasoning;
+        if(aiJson.trading_decision?.invalidation_condition) {
+             decision.trading_decision.invalidation_condition = aiJson.trading_decision.invalidation_condition;
+        }
+
     } catch (e) {
-        // Ignore JSON parse error, use defaults
+        // Ignore JSON parse error, use defaults but maybe keep text if it looks like reasoning
+        console.warn("AI Response JSON parse failed, using defaults.");
     }
 
     // Calc precise size for "5%"
@@ -446,12 +464,12 @@ ${posAnalysis}
   } catch (error: any) {
     console.error("Strategy Error:", error);
     return {
-        stage_analysis: "Error",
-        market_assessment: "Error",
-        hot_events_overview: "Error",
-        eth_analysis: "Error",
+        stage_analysis: "策略执行错误",
+        market_assessment: "无法评估",
+        hot_events_overview: "数据获取失败",
+        eth_analysis: "N/A",
         trading_decision: { action: 'hold', confidence: "0%", position_size: "0", leverage: "0", profit_target: "", stop_loss: "", invalidation_condition: "" },
-        reasoning: error.message,
+        reasoning: `系统错误: ${error.message}`,
         action: 'HOLD',
         size: "0",
         leverage: "0"
