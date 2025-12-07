@@ -149,7 +149,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3">
             <div className={`w-3 h-3 rounded-full transition-colors duration-500 ${isRunning ? 'bg-okx-up animate-pulse' : 'bg-okx-subtext'}`}></div>
             <h1 className="font-bold text-lg tracking-tight flex items-center gap-2">
-              ETH 10U 战神 
+              ETH EMA 猎手 
               <span className="text-xs font-normal text-okx-subtext px-2 py-0.5 bg-okx-border rounded-full">Cloud Pro</span>
             </h1>
           </div>
