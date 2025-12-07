@@ -21,7 +21,7 @@ export const STRATEGY_STAGES = {
     name: "EMA 滚仓追踪",
     initial_risk: 0.05, // 5% Initial Position
     add_step: 0.05,     // Add 5% per 5% profit (Equity Gain)
-    leverage: 50,       // Default Leverage
+    leverage: 5,       // Default Leverage
   }
 };
 
