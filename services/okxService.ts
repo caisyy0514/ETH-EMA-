@@ -1,6 +1,6 @@
 
 import { AccountBalance, CandleData, MarketDataCollection, PositionData, TickerData, AIDecision, AccountContext } from "../types";
-import { INSTRUMENT_ID, MOCK_TICKER, CONTRACT_VAL_ETH } from "../constants";
+import { INSTRUMENT_ID, MOCK_TICKER, CONTRACT_VAL_ETH, DEFAULT_LEVERAGE } from "../constants";
 import CryptoJS from 'crypto-js';
 
 const randomVariation = (base: number, percent: number) => {
@@ -264,7 +264,7 @@ export const executeOrder = async (order: AIDecision, config: any): Promise<any>
 
     // 2. Set Leverage First (Crucial for V5)
     try {
-        await setLeverage(INSTRUMENT_ID, order.leverage || "50", posSide, config);
+        await setLeverage(INSTRUMENT_ID, order.leverage || DEFAULT_LEVERAGE, posSide, config);
     } catch (e: any) {
         throw new Error(`无法设置战神策略杠杆: ${e.message}`);
     }
