@@ -4,9 +4,6 @@ import { CONTRACT_VAL_ETH, INSTRUMENT_ID, TAKER_FEE_RATE, DEFAULT_LEVERAGE } fro
 
 // --- Technical Indicator Helpers ---
 
-// Define Tick Size for ETH-USDT
-const TICK_SIZE = 0.01;
-
 const calcEMA = (prices: number[], period: number): number => {
   if (prices.length < period) return prices[prices.length - 1];
   const k = 2 / (period + 1);
@@ -112,43 +109,32 @@ function analyze1HTrend(candles: CandleData[]) {
     // Need enough data for EMA60 stability
     if (candles.length < 100) return { direction: 'NEUTRAL', timestamp: 0, description: "数据不足" };
     
-    // EMA data is now pre-calculated in candles (from okxService)
-    // We assume the candle structure has ema15 and ema60 populated if available
-    // BUT okxService implementation calculates EMA inside it and returns CandleData type.
-    // However, types.ts CandleData doesn't explicitly have ema15/60? 
-    // Wait, previous instructions updated okxService to add these. 
-    // And previous instructions updated types.ts to include ema15/ema60?
-    // Let's assume the data passed here HAS ema15 and ema60 on the object, 
-    // but types.ts might need casting if it wasn't fully updated or we access via bracket notation.
-    // Actually, based on previous prompt execution, types.ts WAS updated.
+    const closes = candles.map(c => parseFloat(c.c));
+    const opens = candles.map(c => parseFloat(c.o));
+    const timestamps = candles.map(c => parseInt(c.ts));
     
-    const latest = candles[candles.length - 1] as any;
+    const ema15 = calcEMAArray(closes, 15);
+    const ema60 = calcEMAArray(closes, 60);
     
-    // If EMA data is missing (e.g. initial load), fallback
-    if (!latest.ema15 || !latest.ema60) {
-        return { direction: 'NEUTRAL', timestamp: 0, description: "指标计算中" };
-    }
-
-    const ema15 = latest.ema15;
-    const ema60 = latest.ema60;
+    // Check current (latest completed) candle
+    const i = closes.length - 1;
     
     // Logic 1: EMA Relationship (Dominant Trend)
-    // If EMA15 > EMA60, it is an UPTREND structurally
+    // The user requested: "Look back until trend found" -> The EMA position *is* the result of lookback.
+    // If EMA15 > EMA60, it is an UPTREND structurally, even if current candle is red.
     
-    const isGold = ema15 > ema60;
-    const isDeath = ema15 < ema60;
+    const isGold = ema15[i] > ema60[i];
+    const isDeath = ema15[i] < ema60[i];
     
-    // Logic 2: Candle Color (Strength Indicator)
-    const close = parseFloat(latest.c);
-    const open = parseFloat(latest.o);
-    const isYang = close > open; 
-    const isYin = close < open;
+    // Logic 2: Candle Color (Strength Indicator, not Trend Changer)
+    const isYang = closes[i] > opens[i]; 
+    const isYin = closes[i] < opens[i];
     
     if (isGold) {
         const strength = isYang ? "强势" : "回调中";
         return { 
             direction: 'UP', 
-            timestamp: parseInt(latest.ts), 
+            timestamp: timestamps[i], 
             description: `上涨 (${strength} / EMA金叉)`
         };
     }
@@ -157,45 +143,44 @@ function analyze1HTrend(candles: CandleData[]) {
         const strength = isYin ? "强势" : "反弹中";
         return { 
             direction: 'DOWN', 
-            timestamp: parseInt(latest.ts),
+            timestamp: timestamps[i],
             description: `下跌 (${strength} / EMA死叉)`
         };
     }
     
-    return { direction: 'NEUTRAL', timestamp: parseInt(latest.ts), description: "均线粘合/震荡" };
+    // Very rare case where EMA15 == EMA60 exactly
+    return { direction: 'NEUTRAL', timestamp: timestamps[i], description: "均线粘合/震荡" };
 }
 
 function analyze3mEntry(candles: CandleData[], trendDirection: string) {
     if (candles.length < 100) return { signal: false, action: 'HOLD', sl: 0, reason: "数据不足", structure: "未知" };
     
-    const i = candles.length - 1; // Latest completed candle
-    const curr = candles[i] as any;
-    const prev = candles[i-1] as any;
-
-    if (!curr.ema15 || !curr.ema60 || !prev.ema15 || !prev.ema60) {
-         return { signal: false, action: 'HOLD', sl: 0, reason: "指标数据不足", structure: "未知" };
-    }
+    const closes = candles.map(c => parseFloat(c.c));
+    const highs = candles.map(c => parseFloat(c.h));
+    const lows = candles.map(c => parseFloat(c.l));
+    const ema15 = calcEMAArray(closes, 15);
+    const ema60 = calcEMAArray(closes, 60);
     
-    const currentGold = curr.ema15 > curr.ema60;
+    const i = closes.length - 1; // Latest completed candle
+    
+    const currentGold = ema15[i] > ema60[i];
     const structure = currentGold ? "金叉多头区域" : "死叉空头区域";
 
     // Long Logic: Trend UP -> Find Death Cross -> Then Gold Cross
     if (trendDirection === 'UP') {
         // 1. Check if we JUST crossed up (Gold Cross trigger)
         // Condition: EMA15[i] > EMA60[i] AND EMA15[i-1] <= EMA60[i-1]
-        const justCrossedUp = curr.ema15 > curr.ema60 && prev.ema15 <= prev.ema60;
+        const justCrossedUp = ema15[i] > ema60[i] && ema15[i-1] <= ema60[i-1];
         
         if (justCrossedUp) {
             // 2. Validate "Preceding Death Cross Sequence"
             let foundDeathZone = false;
-            let lowestInDeathZone = parseFloat(curr.l); // Start tracking SL
+            let lowestInDeathZone = lows[i]; // Start tracking SL
             
             for (let x = i - 1; x >= 0; x--) {
-                const c = candles[x] as any;
-                if (c.ema15 < c.ema60) {
+                if (ema15[x] < ema60[x]) {
                     foundDeathZone = true;
-                    const low = parseFloat(c.l);
-                    if (low < lowestInDeathZone) lowestInDeathZone = low;
+                    if (lows[x] < lowestInDeathZone) lowestInDeathZone = lows[x];
                 } else {
                     if (foundDeathZone) break;
                 }
@@ -216,19 +201,17 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
     // Short Logic: Trend DOWN -> Find Gold Cross -> Then Death Cross
     if (trendDirection === 'DOWN') {
         // 1. Check if we JUST crossed down (Death Cross trigger)
-        const justCrossedDown = curr.ema15 < curr.ema60 && prev.ema15 >= prev.ema60;
+        const justCrossedDown = ema15[i] < ema60[i] && ema15[i-1] >= ema60[i-1];
         
         if (justCrossedDown) {
             // 2. Validate "Preceding Gold Cross Sequence"
             let foundGoldZone = false;
-            let highestInGoldZone = parseFloat(curr.h);
+            let highestInGoldZone = highs[i];
             
             for (let x = i - 1; x >= 0; x--) {
-                const c = candles[x] as any;
-                if (c.ema15 > c.ema60) {
+                if (ema15[x] > ema60[x]) {
                     foundGoldZone = true;
-                    const high = parseFloat(c.h);
-                    if (high > highestInGoldZone) highestInGoldZone = high;
+                    if (highs[x] > highestInGoldZone) highestInGoldZone = highs[x];
                 } else {
                     if (foundGoldZone) break;
                 }
@@ -324,8 +307,8 @@ export const getTradingDecision = async (
               const lowestRecent = Math.min(...recent3m.map(c => parseFloat(c.l)));
               
               // 1. Calculate Technical Trail (Candle Structure)
-              // Rule: Lowest of last 5 candles minus 1 tick (TICK_SIZE)
-              let targetSL = lowestRecent - TICK_SIZE;
+              // Only consider moving SL UP
+              let targetSL = lowestRecent * 0.9995;
               
               // 2. Apply "Cross Break Even" Rule if Net Profitable
               if (currentPrice > breakEvenPrice) {
@@ -345,8 +328,8 @@ export const getTradingDecision = async (
               const highestRecent = Math.max(...recent3m.map(c => parseFloat(c.h)));
               
               // 1. Calculate Technical Trail
-              // Rule: Highest of last 5 candles plus 1 tick (TICK_SIZE)
-              let targetSL = highestRecent + TICK_SIZE;
+              // Only consider moving SL DOWN
+              let targetSL = highestRecent * 1.0005;
               
               // 2. Apply Rule
               if (currentPrice < breakEvenPrice) {
@@ -395,7 +378,6 @@ export const getTradingDecision = async (
 - 3m 信号 (入场时机): ${entry3m.signal ? "TRIGGERED" : "WAITING"}
 - 3m 信号详情: ${entry3m.reason}
 - 计算止损位 (SL): ${entry3m.sl}
-- 计算建议: Action=${finalAction}, SL=${finalSL || "Keep"}
 
 **持仓状态**:
 ${posAnalysis}
@@ -413,7 +395,7 @@ ${posAnalysis}
    - 每盈利 5% 加仓 5%。
 4. **止损管理**:
    - 初始止损: 入场前一波反向交叉的极值 (Long用死叉期最低价, Short用金叉期最高价)。
-   - 移动止损: 随后跟随 3m K线高低点移动。
+   - 移动止损: 价格继续有利方向运行后，若多单：将止损价上移至最近3-5根3分钟K线的最低点下方一个最小波动单位。若空单：将止损价下移至最近3-5根3分钟K线的最高点上方一个最小波动单位
 5. **反转离场**:
    - 如果 1H 趋势反转 (与持仓方向相反)，立即平仓。
 
