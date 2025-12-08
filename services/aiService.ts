@@ -106,7 +106,8 @@ const fetchRealTimeNews = async (): Promise<string> => {
 // --- Strategy Logic: ETH EMA Trend Tracking ---
 
 function analyze1HTrend(candles: CandleData[]) {
-    if (candles.length < 60) return { direction: 'NEUTRAL', timestamp: 0 };
+    // Need enough data for EMA60 stability
+    if (candles.length < 100) return { direction: 'NEUTRAL', timestamp: 0, description: "数据不足" };
     
     const closes = candles.map(c => parseFloat(c.c));
     const opens = candles.map(c => parseFloat(c.o));
@@ -118,30 +119,41 @@ function analyze1HTrend(candles: CandleData[]) {
     // Check current (latest completed) candle
     const i = closes.length - 1;
     
-    // Logic 1: EMA Relationship
+    // Logic 1: EMA Relationship (Dominant Trend)
+    // The user requested: "Look back until trend found" -> The EMA position *is* the result of lookback.
+    // If EMA15 > EMA60, it is an UPTREND structurally, even if current candle is red.
+    
     const isGold = ema15[i] > ema60[i];
     const isDeath = ema15[i] < ema60[i];
     
-    // Logic 2: Candle Color
-    const isYang = closes[i] > opens[i]; // Bullish
-    const isYin = closes[i] < opens[i];  // Bearish
+    // Logic 2: Candle Color (Strength Indicator, not Trend Changer)
+    const isYang = closes[i] > opens[i]; 
+    const isYin = closes[i] < opens[i];
     
-    // 1H Trend Judgment
-    if (isGold && isYang) {
-        return { direction: 'UP', timestamp: timestamps[i] };
-    }
-    if (isDeath && isYin) {
-        return { direction: 'DOWN', timestamp: timestamps[i] };
+    if (isGold) {
+        const strength = isYang ? "强势" : "回调中";
+        return { 
+            direction: 'UP', 
+            timestamp: timestamps[i], 
+            description: `上涨 (${strength} / EMA金叉)`
+        };
     }
     
-    // Fallback: Stick to EMA if candle color is ambiguous, but strategy says "EMA + Candle Color"
-    // If strict, we return Neutral. If loose, we follow EMA. 
-    // The prompt says "EMA15上穿EMA60 + K线收阳线 → 上涨趋势". Strict.
-    return { direction: 'NEUTRAL', timestamp: timestamps[i] };
+    if (isDeath) {
+        const strength = isYin ? "强势" : "反弹中";
+        return { 
+            direction: 'DOWN', 
+            timestamp: timestamps[i],
+            description: `下跌 (${strength} / EMA死叉)`
+        };
+    }
+    
+    // Very rare case where EMA15 == EMA60 exactly
+    return { direction: 'NEUTRAL', timestamp: timestamps[i], description: "均线粘合/震荡" };
 }
 
 function analyze3mEntry(candles: CandleData[], trendDirection: string) {
-    if (candles.length < 100) return { signal: false, action: 'HOLD', sl: 0, reason: "数据不足" };
+    if (candles.length < 100) return { signal: false, action: 'HOLD', sl: 0, reason: "数据不足", structure: "未知" };
     
     const closes = candles.map(c => parseFloat(c.c));
     const highs = candles.map(c => parseFloat(c.h));
@@ -151,6 +163,9 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
     
     const i = closes.length - 1; // Latest completed candle
     
+    const currentGold = ema15[i] > ema60[i];
+    const structure = currentGold ? "金叉多头区域" : "死叉空头区域";
+
     // Long Logic: Trend UP -> Find Death Cross -> Then Gold Cross
     if (trendDirection === 'UP') {
         // 1. Check if we JUST crossed up (Gold Cross trigger)
@@ -159,7 +174,6 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
         
         if (justCrossedUp) {
             // 2. Validate "Preceding Death Cross Sequence"
-            // Look backwards from i-1. We need to find a period where EMA15 < EMA60
             let foundDeathZone = false;
             let lowestInDeathZone = lows[i]; // Start tracking SL
             
@@ -168,11 +182,7 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
                     foundDeathZone = true;
                     if (lows[x] < lowestInDeathZone) lowestInDeathZone = lows[x];
                 } else {
-                    // EMA15 > EMA60 (Previous Gold Zone). Stop if we already found our death zone.
                     if (foundDeathZone) break;
-                    // If we haven't found a death zone yet and hit a gold zone immediately, 
-                    // it means the cross at [i] might be noise or invalid? 
-                    // Actually if [i-1] was <=, then [i-1] is the start/end of death zone.
                 }
             }
             
@@ -181,7 +191,8 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
                     signal: true, 
                     action: 'BUY', 
                     sl: lowestInDeathZone, 
-                    reason: "1H上涨 + 3m死叉后金叉" 
+                    reason: "1H上涨 + 3m死叉后金叉",
+                    structure
                 };
             }
         }
@@ -211,18 +222,18 @@ function analyze3mEntry(candles: CandleData[], trendDirection: string) {
                     signal: true, 
                     action: 'SELL', 
                     sl: highestInGoldZone, 
-                    reason: "1H下跌 + 3m金叉后死叉" 
+                    reason: "1H下跌 + 3m金叉后死叉",
+                    structure
                 };
             }
         }
     }
     
-    // Detailed No-Signal Reasons
-    if (trendDirection === 'NEUTRAL') return { signal: false, action: 'HOLD', sl: 0, reason: "1H趋势不明确" };
-    if (trendDirection === 'UP') return { signal: false, action: 'HOLD', sl: 0, reason: "1H上涨中，等待3m回调信号" };
-    if (trendDirection === 'DOWN') return { signal: false, action: 'HOLD', sl: 0, reason: "1H下跌中，等待3m反弹信号" };
+    // Return explicit reasons/structure even if no signal
+    if (trendDirection === 'UP') return { signal: false, action: 'HOLD', sl: 0, reason: "1H上涨中，等待3m回调信号", structure };
+    if (trendDirection === 'DOWN') return { signal: false, action: 'HOLD', sl: 0, reason: "1H下跌中，等待3m反弹信号", structure };
 
-    return { signal: false, action: 'HOLD', sl: 0, reason: "未满足入场条件" };
+    return { signal: false, action: 'HOLD', sl: 0, reason: "1H趋势不明确，暂无入场", structure };
 }
 
 // --- Main Decision Function ---
@@ -372,9 +383,9 @@ export const getTradingDecision = async (
 ${posAnalysis}
 
 **策略规则 (Strategy Rules)**:
-1. **趋势判断 (1H)**: 
-   - EMA15 > EMA60 且 K线阳线 -> 看涨。
-   - EMA15 < EMA60 且 K线阴线 -> 看跌。
+1.**1H 趋势 (趋势判断)**: ${trend1H.direction} (自 ${new Date(trend1H.timestamp).toLocaleTimeString()})   
+   - 只要EMA15 > EMA60 且 K线阳线即为UP。
+   - 只要EMA15 < EMA60 且 K线阴线即为DOWN
 2. **入场逻辑 (3m)**: 
    - 必须在 1H 趋势方向上操作。
    - 看涨时: 等待 3m 图出现 [死叉 EMA15<60] -> [金叉 EMA15>60]。在金叉形成的 K 线收盘买入。
@@ -389,19 +400,20 @@ ${posAnalysis}
    - 如果 1H 趋势反转 (与持仓方向相反)，立即平仓。
 
 **执行规则**:
-- 只有当 1H 趋势明确且 3m 出现特定交叉形态(死后金/金后死)才开仓。
+- 只有当 1H 趋势明确(UP/DOWN) 且 3m 出现特定交叉形态(死后金/金后死)才开仓。
 - 首仓 5% 权益。
 - 盈利 > 5% 权益时滚仓加码 5%。
 - 趋势反转立即平仓。
 - 如果有持仓 且 需要移动止损 -> UPDATE_TPSL (Set new SL).
 - 默认杠杆固定为 ${DEFAULT_LEVERAGE}x。
+
 **输出要求**:
 1. 返回格式必须为 JSON。
 2. **重要**: 所有文本分析字段（stage_analysis, market_assessment, hot_events_overview, eth_analysis, reasoning, invalidation_condition）必须使用 **中文 (Simplified Chinese)** 输出。
 3. **hot_events_overview** 字段：请仔细阅读提供的 News 英文数据，将其翻译并提炼为简练的中文市场热点摘要。
 4. **market_assessment** 字段：必须明确包含以下两行结论：
-   - 【1H趋势】：明确指出当前1小时级别EMA15和EMA60的关系（ [金叉 EMA15>60] 或 [死叉 EMA15<60]）是上涨、下跌还是震荡。
-   - 【3m入场】：明确指出当前3分钟级别是否满足策略定义的入场条件，并说明原因。
+   - 【1H趋势】：${trend1H.description}明确指出当前1小时级别EMA15和EMA60的关系（ [金叉 EMA15>60] 或 [死叉 EMA15<60]）是上涨或下跌。
+   - 【3m入场】：${entry3m.structure} - ${entry3m.signal ? "满足入场" : "等待机会"}明确指出当前3分钟级别是否满足策略定义的入场条件，并说明原因。
 
 请基于上述计算结果生成 JSON 决策。
 `;
@@ -413,8 +425,8 @@ ${posAnalysis}
     ]);
 
     // Construct Fallback strings for market assessment
-    const tDirection = trend1H.direction === 'UP' ? '上涨 (EMA金叉+阳线)' : trend1H.direction === 'DOWN' ? '下跌 (EMA死叉+阴线)' : '震荡/中性';
-    const tEntry = entry3m.signal ? `满足入场条件 (${entry3m.reason})` : `不满足入场条件 (${entry3m.reason})`;
+    const tDirection = trend1H.description;
+    const tEntry = `${entry3m.structure} - ${entry3m.signal ? "满足入场" : entry3m.reason}`;
 
     // We mostly trust our calculated 'finalAction' but let AI explain/confirm format
     let decision: AIDecision = {
