@@ -46,8 +46,8 @@ export const fetchMarketData = async (config: any): Promise<MarketDataCollection
     const candles15mRes = await fetch(`${BASE_URL}/api/v5/market/candles?instId=${INSTRUMENT_ID}&bar=15m&limit=50`);
     const candles15mJson = await candles15mRes.json();
 
-    // NEW: 1H for Trend
-    const candles1HRes = await fetch(`${BASE_URL}/api/v5/market/candles?instId=${INSTRUMENT_ID}&bar=1H&limit=100`);
+    // NEW: 1H for Trend - Increased to 300 to ensure EMA60 is accurate
+    const candles1HRes = await fetch(`${BASE_URL}/api/v5/market/candles?instId=${INSTRUMENT_ID}&bar=1H&limit=300`);
     const candles1HJson = await candles1HRes.json();
 
     // NEW: 3m for Entry/Exit - Increased limit to 300 to capture pre-cross intervals
